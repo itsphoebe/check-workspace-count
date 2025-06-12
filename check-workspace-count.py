@@ -106,11 +106,16 @@ def list_orgs():
             response = session.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
+              
+            # Build list of org dicts with id and created-at
+            page_orgs = [
+                {
+                    "id": org["id"],
+                    "created_at": org["attributes"].get("created-at")
+                }
+                for org in data["data"]
+            ]
 
-            # Create list with orgs from paged response
-            page_orgs = [org["id"] for org in data["data"]]
-
-            # If no more orgs are returned, break loop
             if not page_orgs:
                 break
 
@@ -126,10 +131,10 @@ def list_orgs():
         except requests.exceptions.RequestException as e:
             logger.error(f"Error listing orgs on page {page_number}: {e}")
             break
-    
+
     return orgs
 
-def process_org(org, mode):
+def process_org(org, mode, created_at=None):
     """
     Process an organization to check if it has any workspaces.
     
@@ -176,6 +181,7 @@ def process_org(org, mode):
         with report_lock:
             report_row = {
                 "org": org,
+                "created_at": created_at,
                 "has_workspaces": has_workspaces
             }
             
@@ -200,6 +206,7 @@ def process_org(org, mode):
         with report_lock:
             report_row = {
                 "org": org,
+                "created_at": created_at,
                 "has_workspaces": None,
                 "error": friendly_error
             }
@@ -209,6 +216,26 @@ def process_org(org, mode):
             
             report_rows.append(report_row)
         return org, -1, None
+
+# Gets metadata for an org when its passed as argument or from config file.
+# For now, will grab the created-at date
+def fetch_org_metadata(org_id):
+    url = f"{tfe_url}{api_prefix}organizations/{org_id}"
+    try:
+        response = session.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        attributes = data["data"]["attributes"]
+        return {
+            "id": org_id,
+            "created_at": attributes.get("created-at")
+        }
+    except Exception as e:
+        logger.warning(f"Could not fetch metadata for org '{org_id}': {e}")
+        return {
+            "id": org_id,
+            "created_at": None
+        }
 
 # Create a requests session with retries (max 6 retries, exponential backoff)
 # Covers 429 for rate limits
@@ -262,18 +289,20 @@ if __name__ == "__main__":
                 organizations = [line.strip() for line in f if line.strip()]
         else:
             organizations = [org.strip() for org in args.orgs.split(",") if org.strip()]
+        # Fetch metadata for each org
+        organizations = [fetch_org_metadata(org) for org in organizations]
     elif "organizations" in config:
-        organizations = config["organizations"]
+        organizations = [fetch_org_metadata(org) for org in config["organizations"]]
     else:
         organizations = list_orgs()
 
     logger.info(f"Found {len(organizations)} orgs")
-    logger.info(f"Orgs: {organizations}")
+    logger.info(f"Orgs: {[org['id'] for org in organizations]}")
 
     # Process each organization in parallel, max 5 threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         futures = [
-            executor.submit(process_org, org, args.mode)
+            executor.submit(process_org, org["id"], args.mode, org.get("created_at"))
             for org in organizations
         ]
         for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
@@ -289,9 +318,9 @@ if __name__ == "__main__":
         with open(report_filename, "w", newline="") as csvfile:
             # Use different fieldnames based on mode
             if args.mode == "count":
-                fieldnames = ["org", "workspace_count", "has_workspaces", "error"]
+                fieldnames = ["org", "created_at", "workspace_count", "has_workspaces", "error"]
             else:
-                fieldnames = ["org", "has_workspaces", "error"]
+                fieldnames = ["org", "created_at", "has_workspaces", "error"]
                 
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
