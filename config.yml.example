@@ -1,0 +1,8 @@
+tfe_url: https://tfe-demos.io
+
+# Optional list of organizations to iterate over.
+# If not provided, script will iterate over all organizations. Check script for org presedence.
+# organizations:
+#  - org-0001
+#  - phoebe-test
+#  - doesnt-exist
