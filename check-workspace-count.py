@@ -134,7 +134,7 @@ def list_orgs():
 
     return orgs
 
-def process_org(org, mode, created_at=None):
+def process_org(org, mode, created_at=None, org_metadata_error=""):
     """
     Process an organization to check if it has any workspaces.
     
@@ -182,7 +182,8 @@ def process_org(org, mode, created_at=None):
             report_row = {
                 "org": org,
                 "created_at": created_at,
-                "has_workspaces": has_workspaces
+                "has_workspaces": has_workspaces,
+                "error": org_metadata_error
             }
             
             if mode == "count":
@@ -220,6 +221,8 @@ def process_org(org, mode, created_at=None):
 # Gets metadata for an org when its passed as argument or from config file.
 # For now, will grab the created-at date
 def fetch_org_metadata(org_id):
+    logger.info(f"Fetching metadata for org: {org_id}")
+    
     url = f"{tfe_url}{api_prefix}organizations/{org_id}"
     try:
         response = session.get(url, headers=headers)
@@ -228,14 +231,22 @@ def fetch_org_metadata(org_id):
         attributes = data["data"]["attributes"]
         return {
             "id": org_id,
-            "created_at": attributes.get("created-at")
+            "created_at": attributes.get("created-at"),
+            "error": ""
         }
     except Exception as e:
-        logger.warning(f"Could not fetch metadata for org '{org_id}': {e}")
+        error_msg = f"Could not fetch metadata for org '{org_id}': {e}"
+        logger.warning(error_msg)
         return {
             "id": org_id,
-            "created_at": None
+            "created_at": None,
+            "error": error_msg
         }
+        
+# Fetch metadata for all organizations in parallel
+def fetch_all_org_metadata(org_list, max_workers):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(fetch_org_metadata, org_list))
 
 # Create a requests session with retries (max 6 retries, exponential backoff)
 # Covers 429 for rate limits
@@ -286,13 +297,13 @@ if __name__ == "__main__":
     if args.orgs:
         if os.path.isfile(args.orgs):
             with open(args.orgs, "r") as f:
-                organizations = [line.strip() for line in f if line.strip()]
+                org_names = [line.strip() for line in f if line.strip()]
         else:
-            organizations = [org.strip() for org in args.orgs.split(",") if org.strip()]
-        # Fetch metadata for each org
-        organizations = [fetch_org_metadata(org) for org in organizations]
+            org_names = [org.strip() for org in args.orgs.split(",") if org.strip()]
+        # Fetch metadata for each org in parallel
+        organizations = fetch_all_org_metadata(org_names, max_workers=args.max_workers)
     elif "organizations" in config:
-        organizations = [fetch_org_metadata(org) for org in config["organizations"]]
+        organizations = fetch_all_org_metadata(config["organizations"], max_workers=args.max_workers)
     else:
         organizations = list_orgs()
 
